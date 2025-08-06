@@ -1,0 +1,18 @@
+# Dependencias de Python para la Interfaz ESP32 Monitor
+# Instalar con: pip install -r requirements.txt
+
+# Interfaz gráfica
+PyQt6>=6.5.0
+
+# Comunicación serial
+pyserial>=3.5
+
+# Gráficas en tiempo real
+pyqtgraph>=0.13.0
+
+# Análisis de datos
+numpy>=1.21.0
+
+# Opcional: Para análisis más avanzado
+# pandas>=1.3.0
+# matplotlib>=3.5.0
