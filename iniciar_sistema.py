@@ -24,7 +24,7 @@ import serial.tools.list_ports
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QPushButton, QLabel, QFrame, QGridLayout, QGroupBox,
-    QCheckBox, QSplitter, QTabWidget, QRadioButton, QLineEdit
+    QCheckBox, QSplitter, QTabWidget, QRadioButton, QLineEdit, QScrollArea
 )
 from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -129,10 +129,20 @@ class ESP32Interface(QMainWindow):
         self.plot_data_remote = deque(maxlen=300)
         self.plot_time = deque(maxlen=300)
         
-        # Sensores disponibles
-        self.sensors = ["pot", "ldr", "enc", "ax"]
-        self.sensor_names = ["Potenciómetro", "LDR", "Encoder", "Acelerómetro"]
-        self.sensor_units = ["V", "V", "V", "m/s²"]
+        # Sensores disponibles - ACTUALIZADO con MPU6050
+        self.sensors = ["pot", "ldr", "enc", "ax", "ay", "az", "gx", "gy", "gz", "temp"]
+        self.sensor_names = [
+            "Potenciómetro", "LDR", "Encoder", 
+            "Acelerómetro X", "Acelerómetro Y", "Acelerómetro Z",
+            "Giroscopio X", "Giroscopio Y", "Giroscopio Z",
+            "Temperatura MPU"
+        ]
+        self.sensor_units = [
+            "V", "V", "V", 
+            "g", "g", "g", 
+            "°/s", "°/s", "°/s",
+            "°C"
+        ]
         self.current_sensor = 0
         
         # Configurar UI
@@ -250,17 +260,90 @@ class ESP32Interface(QMainWindow):
         master_layout.addWidget(self.esp2_master_btn)
         layout.addWidget(master_group)
         
-        # === SENSORES ===
-        sensor_group = QGroupBox("Sensor a Visualizar")
-        sensor_layout = QVBoxLayout(sensor_group)
+        # === SELECCIÓN DE SENSORES ===
+        sensor_group = QGroupBox("Sensores (MPU6050 Integrado)")
+        sensor_main_layout = QVBoxLayout(sensor_group)
+        
+        # Crear área de scroll para los sensores
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMaximumHeight(250)  # Altura fija para el área de scroll
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Widget contenedor para los sensores dentro del scroll
+        sensor_scroll_widget = QWidget()
+        sensor_layout = QVBoxLayout(sensor_scroll_widget)
+        sensor_layout.setSpacing(5)  # Reducir espaciado entre botones
+        
+        # Sensores analógicos
+        analog_label = QLabel("📊 Sensores Analógicos:")
+        analog_label.setStyleSheet("color: #00ff88; font-weight: bold; margin-top: 5px;")
+        sensor_layout.addWidget(analog_label)
         
         self.sensor_buttons = []
-        for i, (name, unit) in enumerate(zip(self.sensor_names, self.sensor_units)):
-            btn = QPushButton(f"{name} ({unit})")
+        # Primeros 3 botones para sensores analógicos
+        for i in range(3):
+            name, unit = self.sensor_names[i], self.sensor_units[i]
+            btn = QPushButton(f"S{i+1}: {name} ({unit})")
             btn.setCheckable(True)
+            btn.setMinimumHeight(30)  # Altura mínima para los botones
             btn.clicked.connect(lambda checked, idx=i: self.set_sensor(idx))
             self.sensor_buttons.append(btn)
             sensor_layout.addWidget(btn)
+        
+        # Separador para MPU6050
+        mpu_label = QLabel("🎯 MPU6050 (6-DOF):")
+        mpu_label.setStyleSheet("color: #ff8800; font-weight: bold; margin-top: 10px;")
+        sensor_layout.addWidget(mpu_label)
+        
+        # Acelerómetro
+        accel_sublabel = QLabel("   📈 Acelerómetro:")
+        accel_sublabel.setStyleSheet("color: #ffff00; font-size: 10px; margin-left: 10px;")
+        sensor_layout.addWidget(accel_sublabel)
+        
+        for i in range(3, 6):  # ax, ay, az
+            name, unit = self.sensor_names[i], self.sensor_units[i]
+            btn = QPushButton(f"S{i+1}: {name} ({unit})")
+            btn.setCheckable(True)
+            btn.setMinimumHeight(30)
+            btn.clicked.connect(lambda checked, idx=i: self.set_sensor(idx))
+            self.sensor_buttons.append(btn)
+            sensor_layout.addWidget(btn)
+            
+        # Giroscopio
+        gyro_sublabel = QLabel("   🌀 Giroscopio:")
+        gyro_sublabel.setStyleSheet("color: #ffff00; font-size: 10px; margin-left: 10px;")
+        sensor_layout.addWidget(gyro_sublabel)
+        
+        for i in range(6, 9):  # gx, gy, gz
+            name, unit = self.sensor_names[i], self.sensor_units[i]
+            btn = QPushButton(f"S{i+1}: {name} ({unit})")
+            btn.setCheckable(True)
+            btn.setMinimumHeight(30)
+            btn.clicked.connect(lambda checked, idx=i: self.set_sensor(idx))
+            self.sensor_buttons.append(btn)
+            sensor_layout.addWidget(btn)
+            
+        # Temperatura
+        temp_sublabel = QLabel("   🌡️ Temperatura:")
+        temp_sublabel.setStyleSheet("color: #ffff00; font-size: 10px; margin-left: 10px;")
+        sensor_layout.addWidget(temp_sublabel)
+        
+        name, unit = self.sensor_names[9], self.sensor_units[9]
+        btn = QPushButton(f"S10: {name} ({unit})")
+        btn.setCheckable(True)
+        btn.setMinimumHeight(30)
+        btn.clicked.connect(lambda checked, idx=9: self.set_sensor(idx))
+        self.sensor_buttons.append(btn)
+        sensor_layout.addWidget(btn)
+        
+        # Agregar algo de espaciado al final
+        sensor_layout.addStretch()
+        
+        # Configurar el scroll area
+        scroll_area.setWidget(sensor_scroll_widget)
+        sensor_main_layout.addWidget(scroll_area)
         
         self.sensor_buttons[0].setChecked(True)
         layout.addWidget(sensor_group)
@@ -344,12 +427,19 @@ class ESP32Interface(QMainWindow):
         self.plot_widget.setLabel('bottom', 'Tiempo (s)')
         self.plot_widget.setYRange(0, 3.5)
         
-        # Curvas de datos
+        # Curvas de datos - Etiquetas adaptadas para modo distribuido
+        if hasattr(self, 'operation_mode') and self.operation_mode == "DISTRIBUIDO":
+            local_label = f'{self.master_esp} (Maestro)'
+            remote_label = f'{"ESP2" if self.master_esp == "ESP1" else "ESP1"} (Esclavo)'
+        else:
+            local_label = 'Local'
+            remote_label = 'Remoto'
+            
         self.local_curve = self.plot_widget.plot(
-            pen=pg.mkPen('#00FFFF', width=3), name='Local'
+            pen=pg.mkPen('#00FFFF', width=3), name=local_label
         )
         self.remote_curve = self.plot_widget.plot(
-            pen=pg.mkPen('#FF6600', width=2, style=Qt.PenStyle.DashLine), name='Remoto'
+            pen=pg.mkPen('#FF6600', width=2, style=Qt.PenStyle.DashLine), name=remote_label
         )
         
         # Leyenda
@@ -357,16 +447,16 @@ class ESP32Interface(QMainWindow):
         
         layout.addWidget(self.plot_widget)
         
-        # Panel de valores actuales
+        # Panel de valores actuales - Etiquetas dinámicas
         values_frame = QFrame()
         values_layout = QGridLayout(values_frame)
         
-        values_layout.addWidget(QLabel("Local:"), 0, 0)
+        values_layout.addWidget(QLabel("Maestro:"), 0, 0)
         self.local_value = QLabel("0.000 V")
         self.local_value.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         values_layout.addWidget(self.local_value, 0, 1)
         
-        values_layout.addWidget(QLabel("Remoto:"), 0, 2)
+        values_layout.addWidget(QLabel("Esclavo:"), 0, 2)
         self.remote_value = QLabel("0.000 V")
         self.remote_value.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         values_layout.addWidget(self.remote_value, 0, 3)
@@ -445,6 +535,31 @@ class ESP32Interface(QMainWindow):
             }
             QLabel {
                 color: white;
+            }
+            QScrollArea {
+                border: 1px solid #00ff00;
+                border-radius: 4px;
+                background-color: #2a2a2a;
+            }
+            QScrollBar:vertical {
+                background-color: #404040;
+                width: 12px;
+                border-radius: 6px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #00ff00;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #00ff88;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background-color: transparent;
             }
         """)
     
@@ -548,12 +663,36 @@ class ESP32Interface(QMainWindow):
         self.plot_title.setText(f"{sensor_name} ({unit}) - Tiempo Real")
         self.plot_widget.setLabel('left', f'{sensor_name} ({unit})')
         
+        # Configurar rangos según el sensor
+        if sensor_idx < 3:  # Sensores analógicos (0-3.3V)
+            self.plot_widget.setYRange(0, 3.5)
+        elif sensor_idx < 6:  # Acelerómetro (±2g)
+            self.plot_widget.setYRange(-2.5, 2.5)
+        elif sensor_idx < 9:  # Giroscopio (±250°/s)
+            self.plot_widget.setYRange(-300, 300)
+        else:  # Temperatura (0-50°C)
+            self.plot_widget.setYRange(0, 50)
+        
         # Limpiar datos
         self.plot_data_local.clear()
         self.plot_data_remote.clear()
         self.plot_time.clear()
         
         print(f"Sensor cambiado a: {sensor_name}")
+        
+        # Actualizar colores de curvas según el tipo de sensor
+        if sensor_idx < 3:  # Analógicos - azul/naranja
+            self.local_curve.setPen(pg.mkPen('#00FFFF', width=3))
+            self.remote_curve.setPen(pg.mkPen('#FF6600', width=2, style=Qt.PenStyle.DashLine))
+        elif sensor_idx < 6:  # Acelerómetro - verde/rojo
+            self.local_curve.setPen(pg.mkPen('#00FF00', width=3))
+            self.remote_curve.setPen(pg.mkPen('#FF0000', width=2, style=Qt.PenStyle.DashLine))
+        elif sensor_idx < 9:  # Giroscopio - magenta/amarillo
+            self.local_curve.setPen(pg.mkPen('#FF00FF', width=3))
+            self.remote_curve.setPen(pg.mkPen('#FFFF00', width=2, style=Qt.PenStyle.DashLine))
+        else:  # Temperatura - rojo/azul
+            self.local_curve.setPen(pg.mkPen('#FF4444', width=3))
+            self.remote_curve.setPen(pg.mkPen('#4444FF', width=2, style=Qt.PenStyle.DashLine))
     
     def send_master_command(self, esp_name):
         """Enviar comando SET_MASTER"""
@@ -640,14 +779,34 @@ class ESP32Interface(QMainWindow):
                     self.local_esp = device
                     print(f"Auto-detectado ESP local: {device}")
             
-            # Solo procesar datos del ESP maestro para gráficas
-            if device == self.master_esp:
-                self.update_plot_data(data)
+            # PROCESAR DATOS PARA GRÁFICAS - CAMBIO IMPORTANTE:
+            # En modo DISTRIBUIDO: ambas interfaces grafican los datos del maestro
+            # En modo LOCAL: solo grafica el ESP maestro
+            if self.operation_mode == "DISTRIBUIDO":
+                # En modo distribuido, cualquier ESP puede tener los datos del maestro
+                # El ESP esclavo recibe los datos del maestro por RS485
+                if 'local' in data and 'remote' in data:
+                    # Si tiene datos local Y remote, es el ESP maestro
+                    if device == self.master_esp:
+                        self.update_plot_data(data)
+                        print(f"Graficando datos del maestro {device} (directo)")
+                    else:
+                        # Si es el ESP esclavo pero tiene datos, significa que recibió del maestro
+                        # Los datos 'remote' del esclavo son en realidad los datos del maestro
+                        self.update_plot_data_from_slave(data)
+                        print(f"Graficando datos del maestro via {device} (RS485)")
+                elif device == self.master_esp:
+                    # Solo tiene datos locales, es el ESP maestro
+                    self.update_plot_data(data)
+            else:
+                # Modo local normal - solo procesar datos del ESP maestro
+                if device == self.master_esp:
+                    self.update_plot_data(data)
         except Exception as e:
             print(f"Error procesando datos: {e}")
     
     def update_plot_data(self, data):
-        """Actualizar datos de gráfica"""
+        """Actualizar datos de gráfica desde ESP maestro"""
         try:
             sensor_key = self.sensors[self.current_sensor]
             
@@ -663,6 +822,35 @@ class ESP32Interface(QMainWindow):
             
         except Exception as e:
             print(f"Error actualizando datos de gráfica: {e}")
+    
+    def update_plot_data_from_slave(self, data):
+        """Actualizar datos de gráfica desde ESP esclavo (que recibió datos del maestro)"""
+        try:
+            sensor_key = self.sensors[self.current_sensor]
+            
+            # El ESP esclavo tiene los datos del maestro en 'remote'
+            # y sus propios datos en 'local'
+            if self.master_esp == "ESP1":
+                # Si ESP1 es maestro, ESP2 (esclavo) tiene:
+                # - data['local'] = datos de ESP2
+                # - data['remote'] = datos de ESP1 (maestro) recibidos por RS485
+                master_local_val = data.get('remote', {}).get(sensor_key, 0)  # Datos del ESP1 maestro
+                master_remote_val = data.get('local', {}).get(sensor_key, 0)  # Datos del ESP2 esclavo
+            else:
+                # Si ESP2 es maestro, ESP1 (esclavo) tiene:
+                # - data['local'] = datos de ESP1  
+                # - data['remote'] = datos de ESP2 (maestro) recibidos por RS485
+                master_local_val = data.get('remote', {}).get(sensor_key, 0)  # Datos del ESP2 maestro
+                master_remote_val = data.get('local', {}).get(sensor_key, 0)  # Datos del ESP1 esclavo
+            
+            # Agregar a datos (mismo formato que el maestro)
+            current_time = time.time()
+            self.plot_data_local.append(master_local_val)
+            self.plot_data_remote.append(master_remote_val)
+            self.plot_time.append(current_time)
+            
+        except Exception as e:
+            print(f"Error actualizando datos desde esclavo: {e}")
     
     def update_display(self):
         """Actualizar visualización (20Hz)"""

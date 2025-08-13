@@ -1,10 +1,13 @@
 /*
- * ESP32 S3 - ESP2 Secundario - SISTEMA MAESTRO/ESCLAVO
+ * ESP32 S3 - ESP2 Secundario - SISTEMA MAESTRO/ESCLAVO + MPU6050
  * Comunicación RS485/RS232 con comando de rol maestro/esclavo
  * Solo el ESP MAESTRO envía datos continuos
+ * Integración MPU6050: SDA=Pin5, SCL=Pin41
  */
 
 #include <HardwareSerial.h>
+#include <Wire.h>
+#include <MPU6050.h>
 
 // ============ DEFINICIÓN DE PINES ============
 #define LED_VERDE          21

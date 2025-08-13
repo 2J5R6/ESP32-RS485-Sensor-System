@@ -1,10 +1,13 @@
 /*
- * ESP32 S3 - ESP1 Principal - SISTEMA MAESTRO/ESCLAVO
+ * ESP32 S3 - ESP1 Principal - SISTEMA MAESTRO/ESCLAVO + MPU6050
  * Comunicación RS485/RS232 con comando de rol maestro/esclavo
  * Solo el ESP MAESTRO envía datos continuos
+ * Integración MPU6050: SDA=Pin5, SCL=Pin41
  */
 
 #include <HardwareSerial.h>
+#include <Wire.h>
+#include <MPU6050.h>
 
 // ============ DEFINICIÓN DE PINES ============
 #define LED_VERDE          21
@@ -21,14 +24,26 @@
 #define PIN_LDR             7
 #define PIN_ENCODER         8
 
+// I2C para MPU6050
+#define SDA_PIN             5
+#define SCL_PIN            41
+
 // ============ VARIABLES GLOBALES ============
 HardwareSerial RS485Serial(1);
+MPU6050 mpu;
 
 // Variables de sensores
 struct SensorData {
   int potenciometro;
   int ldr;
   int encoder;
+  float accel_x;
+  float accel_y;
+  float accel_z;
+  float gyro_x;
+  float gyro_y;
+  float gyro_z;
+  float temperature;
   unsigned long timestamp;
 } localSensors, remoteSensors;
 
@@ -50,14 +65,14 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("=== ESP1 INICIANDO - SISTEMA MAESTRO/ESCLAVO ===");
+  Serial.println("=== ESP1 INICIANDO - SISTEMA MAESTRO/ESCLAVO + MPU6050 ===");
   
   // Configurar LEDs
   pinMode(LED_VERDE, OUTPUT);
   pinMode(LED_ROJO, OUTPUT);
   pinMode(LED_AMARILLO, OUTPUT);
   
-  // Configurar sensores
+  // Configurar sensores analógicos
   pinMode(PIN_POTENCIOMETRO, INPUT);
   pinMode(PIN_LDR, INPUT);
   pinMode(PIN_ENCODER, INPUT);
@@ -66,6 +81,21 @@ void setup() {
   digitalWrite(LED_VERDE, LOW);
   digitalWrite(LED_ROJO, LOW);
   digitalWrite(LED_AMARILLO, LOW);
+  
+  // ============ INICIALIZAR MPU6050 ============
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);  // 400kHz I2C
+  
+  Serial.println("Inicializando MPU6050...");
+  mpu.initialize();
+  
+  if (mpu.testConnection()) {
+    Serial.println("✓ MPU6050 conectado correctamente");
+    mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);  // ±2g
+    mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);  // ±250°/s
+  } else {
+    Serial.println("✗ Error: MPU6050 no detectado");
+  }
   
   // Configurar RS485
   pinMode(RS485_RE, OUTPUT);
@@ -115,9 +145,24 @@ void loop() {
 // ============ FUNCIONES DE SENSORES ============
 
 void readLocalSensors() {
+  // Leer sensores analógicos
   localSensors.potenciometro = analogRead(PIN_POTENCIOMETRO);
   localSensors.ldr = analogRead(PIN_LDR);
   localSensors.encoder = analogRead(PIN_ENCODER);
+  
+  // Leer MPU6050
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  
+  // Convertir a unidades físicas
+  localSensors.accel_x = ax / 16384.0;  // ±2g range
+  localSensors.accel_y = ay / 16384.0;
+  localSensors.accel_z = az / 16384.0;
+  localSensors.gyro_x = gx / 131.0;     // ±250°/s range
+  localSensors.gyro_y = gy / 131.0;
+  localSensors.gyro_z = gz / 131.0;
+  localSensors.temperature = mpu.getTemperature() / 340.0 + 36.53;
+  
   localSensors.timestamp = millis();
 }
 
@@ -138,7 +183,21 @@ void sendJSONData() {
   Serial.print((localSensors.ldr * 3.3) / 4095.0, 3);
   Serial.print(",\"enc\":");
   Serial.print((localSensors.encoder * 3.3) / 4095.0, 3);
-  Serial.print(",\"ax\":0.0}");
+  Serial.print(",\"ax\":");
+  Serial.print(localSensors.accel_x, 3);
+  Serial.print(",\"ay\":");
+  Serial.print(localSensors.accel_y, 3);
+  Serial.print(",\"az\":");
+  Serial.print(localSensors.accel_z, 3);
+  Serial.print(",\"gx\":");
+  Serial.print(localSensors.gyro_x, 3);
+  Serial.print(",\"gy\":");
+  Serial.print(localSensors.gyro_y, 3);
+  Serial.print(",\"gz\":");
+  Serial.print(localSensors.gyro_z, 3);
+  Serial.print(",\"temp\":");
+  Serial.print(localSensors.temperature, 2);
+  Serial.print("}");
   
   // Datos remotos si existen
   if (remoteSensors.timestamp > 0 && (millis() - remoteSensors.timestamp < 1000)) {
@@ -148,9 +207,23 @@ void sendJSONData() {
     Serial.print((remoteSensors.ldr * 3.3) / 4095.0, 3);
     Serial.print(",\"enc\":");
     Serial.print((remoteSensors.encoder * 3.3) / 4095.0, 3);
-    Serial.print(",\"ax\":0.0}");
+    Serial.print(",\"ax\":");
+    Serial.print(remoteSensors.accel_x, 3);
+    Serial.print(",\"ay\":");
+    Serial.print(remoteSensors.accel_y, 3);
+    Serial.print(",\"az\":");
+    Serial.print(remoteSensors.accel_z, 3);
+    Serial.print(",\"gx\":");
+    Serial.print(remoteSensors.gyro_x, 3);
+    Serial.print(",\"gy\":");
+    Serial.print(remoteSensors.gyro_y, 3);
+    Serial.print(",\"gz\":");
+    Serial.print(remoteSensors.gyro_z, 3);
+    Serial.print(",\"temp\":");
+    Serial.print(remoteSensors.temperature, 2);
+    Serial.print("}");
   } else {
-    Serial.print(",\"remote\":{\"pot\":0.0,\"ldr\":0.0,\"enc\":0.0,\"ax\":0.0}");
+    Serial.print(",\"remote\":{\"pot\":0.0,\"ldr\":0.0,\"enc\":0.0,\"ax\":0.0,\"ay\":0.0,\"az\":0.0,\"gx\":0.0,\"gy\":0.0,\"gz\":0.0,\"temp\":0.0}");
   }
   
   Serial.println("}");
