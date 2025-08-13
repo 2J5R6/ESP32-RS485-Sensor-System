@@ -141,7 +141,7 @@ void sendJSONData() {
   Serial.print(",\"ax\":0.0}");
   
   // Datos remotos si existen
-  if (remoteSensors.timestamp > 0) {
+  if (remoteSensors.timestamp > 0 && (millis() - remoteSensors.timestamp < 1000)) {
     Serial.print(",\"remote\":{\"pot\":");
     Serial.print((remoteSensors.potenciometro * 3.3) / 4095.0, 3);
     Serial.print(",\"ldr\":");
@@ -155,9 +155,9 @@ void sendJSONData() {
   
   Serial.println("}");
   
-  // Pedir datos de ESP1 cada cierto tiempo
+  // Pedir datos de ESP1 cada cierto tiempo (más frecuente)
   static unsigned long lastRequest = 0;
-  if (millis() - lastRequest > 200) {  // Cada 200ms
+  if (millis() - lastRequest > 100) {  // Cada 100ms (10Hz)
     requestESP1Data();
     lastRequest = millis();
   }
@@ -187,39 +187,55 @@ void processSerialCommands() {
     else if (input.startsWith("{") && input.endsWith("}")) {
       processLEDCommands(input);
     }
-    // Comandos de LED simples
-    else if (input.indexOf("led_verde") >= 0) {
+    // Comandos de LED para ESP2 (locales)
+    else if (input.indexOf("esp2_led_verde") >= 0 || (input.indexOf("led_verde") >= 0 && input.indexOf("esp1") < 0)) {
       if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
         led_verde_state = true;
         digitalWrite(LED_VERDE, HIGH);
-        Serial.println("LED Verde ON");
+        Serial.println("ESP2 - LED Verde ON");
       } else {
         led_verde_state = false;
         digitalWrite(LED_VERDE, LOW);
-        Serial.println("LED Verde OFF");
+        Serial.println("ESP2 - LED Verde OFF");
       }
     }
-    else if (input.indexOf("led_rojo") >= 0) {
+    else if (input.indexOf("esp2_led_rojo") >= 0 || (input.indexOf("led_rojo") >= 0 && input.indexOf("esp1") < 0)) {
       if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
         led_rojo_state = true;
         digitalWrite(LED_ROJO, HIGH);
-        Serial.println("LED Rojo ON");
+        Serial.println("ESP2 - LED Rojo ON");
       } else {
         led_rojo_state = false;
         digitalWrite(LED_ROJO, LOW);
-        Serial.println("LED Rojo OFF");
+        Serial.println("ESP2 - LED Rojo OFF");
       }
     }
-    else if (input.indexOf("led_amarillo") >= 0) {
+    else if (input.indexOf("esp2_led_amarillo") >= 0 || (input.indexOf("led_amarillo") >= 0 && input.indexOf("esp1") < 0)) {
       if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
         led_amarillo_state = true;
         digitalWrite(LED_AMARILLO, HIGH);
-        Serial.println("LED Amarillo ON");
+        Serial.println("ESP2 - LED Amarillo ON");
       } else {
         led_amarillo_state = false;
         digitalWrite(LED_AMARILLO, LOW);
-        Serial.println("LED Amarillo OFF");
+        Serial.println("ESP2 - LED Amarillo OFF");
       }
+    }
+    // Comandos de LED para ESP1 (remotos - enviar por RS485)
+    else if (input.indexOf("esp1_led_verde") >= 0) {
+      String state = (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) ? "true" : "false";
+      sendLEDCommandToESP1("led_verde", state);
+      Serial.println("Comando LED enviado a ESP1: led_verde=" + state);
+    }
+    else if (input.indexOf("esp1_led_rojo") >= 0) {
+      String state = (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) ? "true" : "false";
+      sendLEDCommandToESP1("led_rojo", state);
+      Serial.println("Comando LED enviado a ESP1: led_rojo=" + state);
+    }
+    else if (input.indexOf("esp1_led_amarillo") >= 0) {
+      String state = (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) ? "true" : "false";
+      sendLEDCommandToESP1("led_amarillo", state);
+      Serial.println("Comando LED enviado a ESP1: led_amarillo=" + state);
     }
   }
 }
@@ -299,6 +315,17 @@ void sendRoleCommandToESP1(String role) {
   Serial.println("Comando de rol enviado a ESP1: " + role);
 }
 
+void sendLEDCommandToESP1(String ledName, String state) {
+  setRS485TransmitMode();
+  delay(5);
+  
+  RS485Serial.println("LED:" + ledName + ":" + state);
+  RS485Serial.flush();
+  
+  delay(10);
+  setRS485ReceiveMode();
+}
+
 void requestESP1Data() {
   setRS485TransmitMode();
   delay(5);
@@ -336,6 +363,12 @@ void receiveFromRS485() {
           remoteSensors.ldr = sensorData.substring(comma1 + 1, comma2).toInt();
           remoteSensors.encoder = sensorData.substring(comma2 + 1).toInt();
           remoteSensors.timestamp = millis();
+          Serial.print("Datos recibidos de ESP1: pot=");
+          Serial.print(remoteSensors.potenciometro);
+          Serial.print(" ldr=");
+          Serial.print(remoteSensors.ldr);
+          Serial.print(" enc=");
+          Serial.println(remoteSensors.encoder);
         }
       }
       // Comando de rol recibido
@@ -349,6 +382,37 @@ void receiveFromRS485() {
           is_master = false;
           device_role = "ESCLAVO";
           Serial.println("ESP2 configurado como ESCLAVO por ESP1");
+        }
+      }
+      // Comando de LED recibido: "LED:led_verde:true"
+      else if (data.startsWith("LED:")) {
+        String ledCommand = data.substring(4);
+        int colon = ledCommand.indexOf(':');
+        if (colon > 0) {
+          String ledName = ledCommand.substring(0, colon);
+          String state = ledCommand.substring(colon + 1);
+          
+          if (ledName == "led_verde") {
+            led_verde_state = (state == "true");
+            digitalWrite(LED_VERDE, led_verde_state ? HIGH : LOW);
+            Serial.print("ESP2 - LED Verde ");
+            Serial.print(led_verde_state ? "ON" : "OFF");
+            Serial.println(" (por ESP1)");
+          }
+          else if (ledName == "led_rojo") {
+            led_rojo_state = (state == "true");
+            digitalWrite(LED_ROJO, led_rojo_state ? HIGH : LOW);
+            Serial.print("ESP2 - LED Rojo ");
+            Serial.print(led_rojo_state ? "ON" : "OFF");
+            Serial.println(" (por ESP1)");
+          }
+          else if (ledName == "led_amarillo") {
+            led_amarillo_state = (state == "true");
+            digitalWrite(LED_AMARILLO, led_amarillo_state ? HIGH : LOW);
+            Serial.print("ESP2 - LED Amarillo ");
+            Serial.print(led_amarillo_state ? "ON" : "OFF");
+            Serial.println(" (por ESP1)");
+          }
         }
       }
     }

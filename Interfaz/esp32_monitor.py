@@ -285,6 +285,16 @@ class ESP32Monitor(QMainWindow):
         master_layout.addWidget(self.esp2_master_btn)
         layout.addWidget(master_group)
         
+        # === PRUEBAS DE COMUNICACIÓN ===
+        test_group = QGroupBox("Pruebas de Comunicación")
+        test_layout = QVBoxLayout(test_group)
+        
+        self.test_remote_leds_btn = QPushButton("Probar LEDs Remotos")
+        self.test_remote_leds_btn.clicked.connect(self.test_remote_led_commands)
+        test_layout.addWidget(self.test_remote_leds_btn)
+        
+        layout.addWidget(test_group)
+        
         # === SELECCIÓN DE SENSOR/VARIABLE ===
         sensor_group = QGroupBox("Variable a Visualizar (4 Botones)")
         sensor_layout = QVBoxLayout(sensor_group)
@@ -760,21 +770,52 @@ class ESP32Monitor(QMainWindow):
     def send_led_command(self, target, led_name, state):
         """Enviar comando de LED al ESP correspondiente"""
         try:
-            # Crear comando simple para compatibilidad
-            command = f"{led_name}:{str(state).lower()}\n"
+            # Crear comando específico por ESP para evitar conflictos
+            if target == 'ESP1':
+                command = f"esp1_{led_name}:{str(state).lower()}\n"
+            elif target == 'ESP2':
+                command = f"esp2_{led_name}:{str(state).lower()}\n"
+            else:
+                command = f"{led_name}:{str(state).lower()}\n"
             
             # Enviar al ESP correspondiente
             if target == 'ESP1' and hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
                 self.esp1_worker.write_data(command.encode())
-                print(f"Enviado a ESP1: {led_name} = {state}")
+                print(f"Enviado a ESP1: {command.strip()}")
             elif target == 'ESP2' and hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
                 self.esp2_worker.write_data(command.encode())
-                print(f"Enviado a ESP2: {led_name} = {state}")
+                print(f"Enviado a ESP2: {command.strip()}")
             else:
                 print(f"Error: {target} no está conectado o no está corriendo")
                 
         except Exception as e:
             print(f"Error enviando comando LED: {e}")
+    
+    def test_remote_led_commands(self):
+        """Función de prueba para comandos LED remotos"""
+        # Prueba ESP1 → ESP2
+        if hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
+            print("Probando ESP1 → ESP2 LED commands:")
+            test_commands = [
+                "esp2_led_verde:true\n",
+                "esp2_led_rojo:true\n", 
+                "esp2_led_amarillo:true\n"
+            ]
+            for cmd in test_commands:
+                self.esp1_worker.write_data(cmd.encode())
+                print(f"Enviado desde ESP1: {cmd.strip()}")
+        
+        # Prueba ESP2 → ESP1  
+        if hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
+            print("Probando ESP2 → ESP1 LED commands:")
+            test_commands = [
+                "esp1_led_verde:true\n",
+                "esp1_led_rojo:true\n",
+                "esp1_led_amarillo:true\n"
+            ]
+            for cmd in test_commands:
+                self.esp2_worker.write_data(cmd.encode())
+                print(f"Enviado desde ESP2: {cmd.strip()}")
     
     def closeEvent(self, event):
         """Limpiar recursos al cerrar"""
