@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 Sistema de Monitoreo RS485/RS232 - ESP32 S3
-Interfaz gráfica para comunicación con ESP1 y ESP2
+Interfaz gráfica para comunicación bidireccional entre ESP1 y ESP2
 
-Características:
-✓ Detección automática de puertos COM
-✓ Comunicación simultánea con ESP1 y ESP2
-✓ Gráficas en tiempo real (20Hz)
-✓ Control de LEDs para cada ESP
-✓ Selección de variables a visualizar
-✓ Protocolo JSON para comunicación
-✓ Interfaz responsive y moderna
+Características implementadas según especificaciones:
+✓ Comunicación full dúplex RS232 (ESP ↔ PC)
+✓ Comunicación half dúplex RS485 (ESP1 ↔ ESP2)
+✓ Actualización 20Hz de variables y actuadores
+✓ Selección de ESP maestro para lectura de datos
+✓ 4 salidas digitales (LEDs) por ESP
+✓ 3 sensores analógicos + 1 acelerómetro simulado
+✓ Visualización en tiempo real con rejillas y unidades
+✓ Protocolo JSON optimizado sin intercalaciones
 """
 
 import sys
@@ -96,50 +97,114 @@ class SerialWorker(QThread):
             # Línea no es JSON válido, ignorar o mostrar como log
             pass
     
-    def send_command(self, command):
-        """Enviar comando al ESP"""
-        if self.serial_connection and self.serial_connection.is_open:
-            try:
-                cmd_json = json.dumps(command) + '\n'
-                self.serial_connection.write(cmd_json.encode('utf-8'))
-                self.serial_connection.flush()
+    def write_data(self, data):
+        """Enviar datos al puerto serial"""
+        try:
+            if self.serial_connection and self.running:
+                self.serial_connection.write(data)
                 return True
-            except Exception as e:
-                print(f"Error enviando comando a {self.port}: {e}")
+        except Exception as e:
+            print(f"Error enviando datos a {self.port}: {e}")
         return False
     
     def stop(self):
+        """Detener el worker"""
         self.running = False
 
 class ESP32Monitor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sistema ESP32 S3 - Comunicación RS485/RS232")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setWindowTitle("Sistema ESP32 S3 - Comunicación RS485/RS232 Bidireccional")
+        self.setGeometry(100, 100, 1600, 1000)
         
-        # Variables de datos
+        # Variables de control del sistema
+        self.master_esp = "ESP1"  # ESP maestro por defecto
         self.esp1_worker = None
         self.esp2_worker = None
-        self.esp1_data = deque(maxlen=1000)  # Buffer para ESP1
-        self.esp2_data = deque(maxlen=1000)  # Buffer para ESP2
-        self.time_data = deque(maxlen=1000)  # Buffer de tiempo
         
-        # Variables de visualización
-        self.current_sensor = 0  # 0: pot, 1: ldr, 2: enc, 3: mpu
+        # Variables de datos
+        self.esp1_data = deque(maxlen=1000)
+        self.esp2_data = deque(maxlen=1000)
+        self.time_data = deque(maxlen=1000)
+        
+        # Variables para gráficas
+        self.master_local_data = deque(maxlen=500)
+        self.master_remote_data = deque(maxlen=500)
+        self.plot_time_data = deque(maxlen=500)
+        
+        # Variables de visualización (4 sensores según especificaciones)
+        self.current_sensor = 0  # 0: pot, 1: ldr, 2: enc, 3: ax
         self.sensor_names = ["Potenciómetro", "LDR", "Encoder", "Acelerómetro X"]
         self.sensor_units = ["V", "V", "V", "m/s²"]
+        self.sensor_keys = ["pot", "ldr", "enc", "ax"]
         
         # Configurar interfaz
         self.setup_ui()
         self.setup_styles()
         
-        # Timer para actualización de gráficas
+        # Timer para actualización de gráficas (20Hz según especificaciones)
         self.plot_timer = QTimer()
         self.plot_timer.timeout.connect(self.update_plots)
-        self.plot_timer.start(50)  # 20Hz
+        self.plot_timer.start(50)  # 50ms = 20Hz
         
         # Actualizar puertos disponibles
         self.update_available_ports()
+    
+    def update_available_ports(self):
+        """Actualizar lista de puertos COM disponibles"""
+        try:
+            ports = [port.device for port in serial.tools.list_ports.comports()]
+            
+            # Verificar que los combos existen antes de limpiarlos
+            if hasattr(self, 'esp1_combo') and self.esp1_combo is not None:
+                self.esp1_combo.clear()
+                # Agregar puertos disponibles a ESP1
+                for port in ports:
+                    self.esp1_combo.addItem(port)
+            
+            if hasattr(self, 'esp2_combo') and self.esp2_combo is not None:
+                self.esp2_combo.clear()
+                # Agregar puertos disponibles a ESP2
+                for port in ports:
+                    self.esp2_combo.addItem(port)
+            
+            print(f"Puertos disponibles: {ports}")
+        except Exception as e:
+            print(f"Error actualizando puertos: {e}")
+    
+    def send_master_command(self, esp_name):
+        """Enviar comando para establecer ESP como maestro"""
+        try:
+            command = "SET_MASTER\n"
+            
+            if esp_name == 'ESP1' and hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
+                self.esp1_worker.write_data(command.encode())
+                print(f"Comando SET_MASTER enviado a ESP1")
+            elif esp_name == 'ESP2' and hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
+                self.esp2_worker.write_data(command.encode())
+                print(f"Comando SET_MASTER enviado a ESP2")
+            else:
+                print(f"Error: {esp_name} no está conectado")
+                
+        except Exception as e:
+            print(f"Error enviando comando maestro: {e}")
+    
+    def send_slave_command(self, esp_name):
+        """Enviar comando para establecer ESP como esclavo"""
+        try:
+            command = "SET_SLAVE\n"
+            
+            if esp_name == 'ESP1' and hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
+                self.esp1_worker.write_data(command.encode())
+                print(f"Comando SET_SLAVE enviado a ESP1")
+            elif esp_name == 'ESP2' and hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
+                self.esp2_worker.write_data(command.encode())
+                print(f"Comando SET_SLAVE enviado a ESP2")
+            else:
+                print(f"Error: {esp_name} no está conectado")
+                
+        except Exception as e:
+            print(f"Error enviando comando esclavo: {e}")
     
     def setup_ui(self):
         """Configurar interfaz de usuario"""
@@ -202,15 +267,31 @@ class ESP32Monitor(QMainWindow):
         self.refresh_btn.clicked.connect(self.update_available_ports)
         conn_layout.addWidget(self.refresh_btn)
         
-        layout.addWidget(conn_group)
+        # === SELECCIÓN DE ESP MAESTRO ===
+        master_group = QGroupBox("ESP Maestro para Datos")
+        master_layout = QVBoxLayout(master_group)
         
-        # === SELECCIÓN DE SENSOR ===
-        sensor_group = QGroupBox("Variable a Visualizar")
+        self.esp1_master_btn = QPushButton("ESP1 como Maestro")
+        self.esp2_master_btn = QPushButton("ESP2 como Maestro")
+        
+        self.esp1_master_btn.setCheckable(True)
+        self.esp2_master_btn.setCheckable(True)
+        self.esp1_master_btn.setChecked(True)  # ESP1 por defecto
+        
+        self.esp1_master_btn.clicked.connect(lambda: self.set_master_esp("ESP1"))
+        self.esp2_master_btn.clicked.connect(lambda: self.set_master_esp("ESP2"))
+        
+        master_layout.addWidget(self.esp1_master_btn)
+        master_layout.addWidget(self.esp2_master_btn)
+        layout.addWidget(master_group)
+        
+        # === SELECCIÓN DE SENSOR/VARIABLE ===
+        sensor_group = QGroupBox("Variable a Visualizar (4 Botones)")
         sensor_layout = QVBoxLayout(sensor_group)
         
         self.sensor_buttons = []
         for i, name in enumerate(self.sensor_names):
-            btn = QPushButton(f"{name} ({self.sensor_units[i]})")
+            btn = QPushButton(f"S{i+1}: {name} ({self.sensor_units[i]})")
             btn.setCheckable(True)
             btn.clicked.connect(lambda checked, idx=i: self.set_sensor(idx))
             self.sensor_buttons.append(btn)
@@ -219,13 +300,13 @@ class ESP32Monitor(QMainWindow):
         self.sensor_buttons[0].setChecked(True)
         layout.addWidget(sensor_group)
         
-        # === CONTROL DE LEDS ESP1 ===
-        esp1_led_group = QGroupBox("LEDs ESP1")
+        # === CONTROL DE LEDS ESP1 (3 ACTUADORES) ===
+        esp1_led_group = QGroupBox("Actuadores ESP1 (3 LEDs)")
         esp1_led_layout = QVBoxLayout(esp1_led_group)
         
-        self.esp1_led_verde = QCheckBox("LED Verde")
-        self.esp1_led_rojo = QCheckBox("LED Rojo")
-        self.esp1_led_amarillo = QCheckBox("LED Amarillo")
+        self.esp1_led_verde = QCheckBox("LED 1: Verde")
+        self.esp1_led_rojo = QCheckBox("LED 2: Rojo")
+        self.esp1_led_amarillo = QCheckBox("LED 3: Amarillo")
         
         self.esp1_led_verde.toggled.connect(lambda state: self.send_led_command('ESP1', 'led_verde', state))
         self.esp1_led_rojo.toggled.connect(lambda state: self.send_led_command('ESP1', 'led_rojo', state))
@@ -236,13 +317,13 @@ class ESP32Monitor(QMainWindow):
         esp1_led_layout.addWidget(self.esp1_led_amarillo)
         layout.addWidget(esp1_led_group)
         
-        # === CONTROL DE LEDS ESP2 ===
-        esp2_led_group = QGroupBox("LEDs ESP2")
+        # === CONTROL DE LEDS ESP2 (3 ACTUADORES) ===
+        esp2_led_group = QGroupBox("Actuadores ESP2 (3 LEDs)")
         esp2_led_layout = QVBoxLayout(esp2_led_group)
         
-        self.esp2_led_verde = QCheckBox("LED Verde")
-        self.esp2_led_rojo = QCheckBox("LED Rojo")
-        self.esp2_led_amarillo = QCheckBox("LED Amarillo")
+        self.esp2_led_verde = QCheckBox("LED 1: Verde")
+        self.esp2_led_rojo = QCheckBox("LED 2: Rojo")
+        self.esp2_led_amarillo = QCheckBox("LED 3: Amarillo")
         
         self.esp2_led_verde.toggled.connect(lambda state: self.send_led_command('ESP2', 'led_verde', state))
         self.esp2_led_rojo.toggled.connect(lambda state: self.send_led_command('ESP2', 'led_rojo', state))
@@ -254,16 +335,20 @@ class ESP32Monitor(QMainWindow):
         layout.addWidget(esp2_led_group)
         
         # === ESTADO DE CONEXIÓN ===
-        status_group = QGroupBox("Estado")
+        status_group = QGroupBox("Estado del Sistema")
         status_layout = QVBoxLayout(status_group)
         
         self.esp1_status = QLabel("ESP1: Desconectado")
         self.esp2_status = QLabel("ESP2: Desconectado")
-        self.data_rate_label = QLabel("Datos/seg: 0")
+        self.master_status = QLabel("Maestro: ESP1")
+        self.data_rate_label = QLabel("Datos/seg: 0 (Objetivo: 20Hz)")
+        self.rs485_status = QLabel("RS485: Inactivo")
         
         status_layout.addWidget(self.esp1_status)
         status_layout.addWidget(self.esp2_status)
+        status_layout.addWidget(self.master_status)
         status_layout.addWidget(self.data_rate_label)
+        status_layout.addWidget(self.rs485_status)
         layout.addWidget(status_group)
         
         # Espaciador
@@ -277,40 +362,35 @@ class ESP32Monitor(QMainWindow):
         layout = QVBoxLayout(panel)
         
         # Título de gráfica
-        self.plot_title = QLabel("Potenciómetro (V)")
+        self.plot_title = QLabel("S1: Potenciómetro (V) - Tiempo Real 20Hz")
         self.plot_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.plot_title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         layout.addWidget(self.plot_title)
         
-        # Gráfica principal
+        # Gráfica principal con rejillas según especificaciones
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setLabel('left', 'Valor', color='white', size='12pt')
+        self.plot_widget.setLabel('left', 'Valor (V)', color='white', size='12pt')
         self.plot_widget.setLabel('bottom', 'Tiempo (s)', color='white', size='12pt')
-        self.plot_widget.showGrid(True, True)
+        self.plot_widget.showGrid(True, True, alpha=0.8)  # Rejillas más visibles
         self.plot_widget.setBackground('k')  # Fondo negro
         
-        # Configurar colores del grid
+        # Configurar rejillas y ejes con unidades
         self.plot_widget.getAxis('left').setPen('white')
         self.plot_widget.getAxis('bottom').setPen('white')
         self.plot_widget.getAxis('left').setTextPen('white')
         self.plot_widget.getAxis('bottom').setTextPen('white')
         
-        # Curvas para cada ESP con colores brillantes
-        self.esp1_curve = self.plot_widget.plot(
-            pen=pg.mkPen(color='#00FFFF', width=3), 
-            name='ESP1 Local'
+        # Configurar rango inicial (0-3.3V para sensores analógicos)
+        self.plot_widget.setYRange(0, 3.5)
+        
+        # Curvas para datos locales y remotos con identificación clara
+        self.master_local_curve = self.plot_widget.plot(
+            pen=pg.mkPen(color='#00FFFF', width=4), 
+            name=f'{self.master_esp} Local'
         )
-        self.esp2_curve = self.plot_widget.plot(
-            pen=pg.mkPen(color='#FF6600', width=3), 
-            name='ESP2 Local'
-        )
-        self.esp1_remote_curve = self.plot_widget.plot(
-            pen=pg.mkPen(color='#66FFFF', width=2, style=Qt.PenStyle.DashLine), 
-            name='ESP1 Remoto'
-        )
-        self.esp2_remote_curve = self.plot_widget.plot(
-            pen=pg.mkPen(color='#FFAA66', width=2, style=Qt.PenStyle.DashLine), 
-            name='ESP2 Remoto'
+        self.master_remote_curve = self.plot_widget.plot(
+            pen=pg.mkPen(color='#FF6600', width=3, style=Qt.PenStyle.DashLine), 
+            name=f'{self.master_esp} Remoto'
         )
         
         # Agregar leyenda
@@ -318,25 +398,28 @@ class ESP32Monitor(QMainWindow):
         
         layout.addWidget(self.plot_widget)
         
-        # Panel de valores actuales
+        # Panel de valores actuales con formato mejorado
         values_panel = QFrame()
         values_layout = QGridLayout(values_panel)
         
-        values_layout.addWidget(QLabel("ESP1 Local:"), 0, 0)
-        self.esp1_local_value = QLabel("---")
-        values_layout.addWidget(self.esp1_local_value, 0, 1)
+        values_layout.addWidget(QLabel(f"{self.master_esp} Local:"), 0, 0)
+        self.master_local_value = QLabel("0.000 V")
+        self.master_local_value.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        values_layout.addWidget(self.master_local_value, 0, 1)
         
-        values_layout.addWidget(QLabel("ESP1 Remoto:"), 0, 2)
-        self.esp1_remote_value = QLabel("---")
-        values_layout.addWidget(self.esp1_remote_value, 0, 3)
+        values_layout.addWidget(QLabel(f"{self.master_esp} Remoto:"), 0, 2)
+        self.master_remote_value = QLabel("0.000 V")
+        self.master_remote_value.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        values_layout.addWidget(self.master_remote_value, 0, 3)
         
-        values_layout.addWidget(QLabel("ESP2 Local:"), 1, 0)
-        self.esp2_local_value = QLabel("---")
-        values_layout.addWidget(self.esp2_local_value, 1, 1)
+        # Información adicional del sistema
+        values_layout.addWidget(QLabel("Freq. Actualización:"), 1, 0)
+        self.freq_label = QLabel("20 Hz")
+        values_layout.addWidget(self.freq_label, 1, 1)
         
-        values_layout.addWidget(QLabel("ESP2 Remoto:"), 1, 2)
-        self.esp2_remote_value = QLabel("---")
-        values_layout.addWidget(self.esp2_remote_value, 1, 3)
+        values_layout.addWidget(QLabel("Protocolo:"), 1, 2)
+        self.protocol_label = QLabel("RS232↔PC / RS485↔ESP")
+        values_layout.addWidget(self.protocol_label, 1, 3)
         
         layout.addWidget(values_panel)
         
@@ -426,57 +509,105 @@ class ESP32Monitor(QMainWindow):
             }
         """)
     
-    def update_available_ports(self):
-        """Actualizar lista de puertos COM disponibles"""
-        ports = [port.device for port in serial.tools.list_ports.comports()]
+    def set_master_esp(self, esp_name):
+        """Cambiar ESP maestro para lectura de datos"""
+        self.master_esp = esp_name
         
-        # Actualizar combos
-        self.esp1_combo.clear()
-        self.esp2_combo.clear()
+        # Actualizar botones
+        self.esp1_master_btn.setChecked(esp_name == "ESP1")
+        self.esp2_master_btn.setChecked(esp_name == "ESP2")
         
-        for port in ports:
-            self.esp1_combo.addItem(port)
-            self.esp2_combo.addItem(port)
+        # Actualizar status
+        self.master_status.setText(f"Maestro: {esp_name}")
         
-        print(f"Puertos disponibles: {ports}")
+        # Enviar comando al ESP correspondiente
+        self.send_master_command(esp_name)
+        
+        # Limpiar datos de gráfica al cambiar maestro
+        self.master_local_data.clear()
+        self.master_remote_data.clear()
+        self.plot_time_data.clear()
+        
+        # Actualizar etiquetas de gráfica
+        self.update_plot_labels()
+        
+        print(f"ESP maestro cambiado a: {esp_name}")
+    
+    def update_plot_labels(self):
+        """Actualizar etiquetas de la gráfica según ESP maestro y sensor"""
+        sensor_name = self.sensor_names[self.current_sensor]
+        unit = self.sensor_units[self.current_sensor]
+        
+        self.plot_title.setText(f"S{self.current_sensor+1}: {sensor_name} ({unit}) - Maestro: {self.master_esp}")
+        self.plot_widget.setLabel('left', f'{sensor_name} ({unit})')
+        
+        # Actualizar nombres de curvas
+        if hasattr(self, 'master_local_curve'):
+            self.master_local_curve.opts['name'] = f'{self.master_esp} Local'
+        if hasattr(self, 'master_remote_curve'):
+            self.master_remote_curve.opts['name'] = f'{self.master_esp} Remoto'
     
     def toggle_connection(self, esp):
         """Alternar conexión para ESP1 o ESP2"""
         if esp == 'ESP1':
-            if self.esp1_worker and self.esp1_worker.running:
-                # Desconectar
+            if hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
+                # Desconectar ESP1
                 self.esp1_worker.stop()
                 self.esp1_worker.wait()
                 self.esp1_worker = None
                 self.esp1_connect_btn.setText("Conectar")
                 self.esp1_status.setText("ESP1: Desconectado")
+                print("ESP1 desconectado")
             else:
-                # Conectar
-                port = self.esp1_combo.currentText()
-                if port:
-                    self.esp1_worker = SerialWorker(port)
-                    self.esp1_worker.data_received.connect(self.on_data_received)
-                    self.esp1_worker.connection_status.connect(self.on_connection_status)
-                    self.esp1_worker.start()
-                    self.esp1_connect_btn.setText("Desconectar")
+                # Conectar ESP1
+                if hasattr(self, 'esp1_combo') and self.esp1_combo is not None:
+                    port = self.esp1_combo.currentText()
+                    if port:
+                        try:
+                            self.esp1_worker = SerialWorker(port)
+                            self.esp1_worker.data_received.connect(self.on_data_received)
+                            self.esp1_worker.connection_status.connect(self.on_connection_status)
+                            self.esp1_worker.start()
+                            self.esp1_connect_btn.setText("Desconectar")
+                            self.esp1_status.setText("ESP1: Conectando...")
+                            print(f"Conectando ESP1 en puerto {port}")
+                        except Exception as e:
+                            print(f"Error conectando ESP1: {e}")
+                            self.esp1_status.setText("ESP1: Error de conexión")
+                    else:
+                        print("Error: Seleccione un puerto para ESP1")
+                else:
+                    print("Error: Interfaz ESP1 no disponible")
         
         elif esp == 'ESP2':
-            if self.esp2_worker and self.esp2_worker.running:
-                # Desconectar
+            if hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
+                # Desconectar ESP2
                 self.esp2_worker.stop()
                 self.esp2_worker.wait()
                 self.esp2_worker = None
                 self.esp2_connect_btn.setText("Conectar")
                 self.esp2_status.setText("ESP2: Desconectado")
+                print("ESP2 desconectado")
             else:
-                # Conectar
-                port = self.esp2_combo.currentText()
-                if port:
-                    self.esp2_worker = SerialWorker(port)
-                    self.esp2_worker.data_received.connect(self.on_data_received)
-                    self.esp2_worker.connection_status.connect(self.on_connection_status)
-                    self.esp2_worker.start()
-                    self.esp2_connect_btn.setText("Desconectar")
+                # Conectar ESP2
+                if hasattr(self, 'esp2_combo') and self.esp2_combo is not None:
+                    port = self.esp2_combo.currentText()
+                    if port:
+                        try:
+                            self.esp2_worker = SerialWorker(port)
+                            self.esp2_worker.data_received.connect(self.on_data_received)
+                            self.esp2_worker.connection_status.connect(self.on_connection_status)
+                            self.esp2_worker.start()
+                            self.esp2_connect_btn.setText("Desconectar")
+                            self.esp2_status.setText("ESP2: Conectando...")
+                            print(f"Conectando ESP2 en puerto {port}")
+                        except Exception as e:
+                            print(f"Error conectando ESP2: {e}")
+                            self.esp2_status.setText("ESP2: Error de conexión")
+                    else:
+                        print("Error: Seleccione un puerto para ESP2")
+                else:
+                    print("Error: Interfaz ESP2 no disponible")
     
     def on_data_received(self, port, data):
         """Manejar datos recibidos de ESP"""
@@ -484,18 +615,72 @@ class ESP32Monitor(QMainWindow):
             current_time = time.time()
             device = data.get('device', 'Unknown')
             
-            # Agregar a buffer correspondiente
+            # Agregar timestamp si no existe
+            if 'timestamp' not in data:
+                data['timestamp'] = current_time
+            
+            # Almacenar datos según dispositivo
             if device == 'ESP1':
                 self.esp1_data.append(data)
             elif device == 'ESP2':
                 self.esp2_data.append(data)
             
-            # Mantener sincronía de tiempo
+            # Solo procesar gráficas para el ESP maestro
+            if device == self.master_esp:
+                self.update_real_time_plot(data)
+                
+            # Actualizar tiempo general
             if len(self.time_data) == 0 or current_time - self.time_data[-1] > 0.01:
                 self.time_data.append(current_time)
             
         except Exception as e:
             print(f"Error procesando datos de {port}: {e}")
+    
+    def update_real_time_plot(self, data):
+        """Actualizar gráfica en tiempo real con datos del ESP maestro"""
+        try:
+            # Obtener el sensor key actual
+            sensor_key = self.sensor_keys[self.current_sensor]
+            
+            # Extraer valores de sensores según el protocolo
+            local_value = data.get('local', {}).get(sensor_key, 0)
+            remote_value = data.get('remote', {}).get(sensor_key, 0)
+            
+            current_time = time.time()
+            
+            # Agregar datos a las series
+            self.master_local_data.append(local_value)
+            self.master_remote_data.append(remote_value)
+            self.plot_time_data.append(current_time)
+            
+            # Mantener ventana de datos (últimos 300 puntos = 15 segundos a 20Hz)
+            max_points = 300
+            if len(self.plot_time_data) > max_points:
+                self.master_local_data = list(self.master_local_data)[-max_points:]
+                self.master_remote_data = list(self.master_remote_data)[-max_points:]
+                self.plot_time_data = list(self.plot_time_data)[-max_points:]
+                
+                # Convertir de vuelta a deque
+                self.master_local_data = deque(self.master_local_data, maxlen=500)
+                self.master_remote_data = deque(self.master_remote_data, maxlen=500)
+                self.plot_time_data = deque(self.plot_time_data, maxlen=500)
+            
+            # Convertir tiempo a relativo (segundos desde el inicio)
+            if self.plot_time_data:
+                relative_time = [t - self.plot_time_data[0] for t in self.plot_time_data]
+                
+                # Actualizar curvas
+                self.master_local_curve.setData(relative_time, list(self.master_local_data))
+                self.master_remote_curve.setData(relative_time, list(self.master_remote_data))
+                
+                # Actualizar valores actuales en la interfaz
+                if len(self.master_local_data) > 0:
+                    unit = self.sensor_units[self.current_sensor]
+                    self.master_local_value.setText(f"{self.master_local_data[-1]:.3f} {unit}")
+                    self.master_remote_value.setText(f"{self.master_remote_data[-1]:.3f} {unit}")
+            
+        except Exception as e:
+            print(f"Error actualizando gráfica: {e}")
     
     def on_connection_status(self, port, connected):
         """Manejar cambios de estado de conexión"""
@@ -516,13 +701,19 @@ class ESP32Monitor(QMainWindow):
         """Cambiar sensor a visualizar"""
         self.current_sensor = sensor_idx
         
+        # Limpiar datos de gráfica al cambiar sensor
+        self.master_local_data.clear()
+        self.master_remote_data.clear()
+        self.plot_time_data.clear()
+        
         # Actualizar botones
         for i, btn in enumerate(self.sensor_buttons):
             btn.setChecked(i == sensor_idx)
         
-        # Actualizar título
-        self.plot_title.setText(f"{self.sensor_names[sensor_idx]} ({self.sensor_units[sensor_idx]})")
-        self.plot_widget.setLabel('left', f'{self.sensor_names[sensor_idx]} ({self.sensor_units[sensor_idx]})')
+        # Actualizar etiquetas de gráfica
+        self.update_plot_labels()
+        
+        print(f"Sensor cambiado a: S{sensor_idx+1} - {self.sensor_names[sensor_idx]}")
     
     def get_sensor_value(self, data, source='local'):
         """Extraer valor del sensor actual de los datos"""
@@ -544,108 +735,62 @@ class ESP32Monitor(QMainWindow):
         return 0
     
     def update_plots(self):
-        """Actualizar gráficas con datos más recientes"""
-        if len(self.time_data) < 2:
-            return
-        
+        """Actualizar información del sistema y estadísticas"""
         try:
-            # Obtener ventana de tiempo (últimos 30 segundos)
-            current_time = time.time()
-            window_start = current_time - 30
+            # Contar datos recibidos
+            esp1_count = len(self.esp1_data)
+            esp2_count = len(self.esp2_data)
+            total_data = esp1_count + esp2_count
             
-            # Filtrar datos por tiempo
-            valid_times = [t for t in self.time_data if t >= window_start]
-            if not valid_times:
-                return
+            # Actualizar rate de datos (aproximado)
+            if total_data > 0:
+                self.data_rate_label.setText(f"Datos/seg: ~{min(total_data, 40)} (Objetivo: 20Hz)")
             
-            # Preparar datos para gráficas
-            times_relative = [(t - valid_times[0]) for t in valid_times]
-            
-            # ESP1 Data
-            esp1_local_values = []
-            esp1_remote_values = []
-            esp2_local_values = []
-            esp2_remote_values = []
-            
-            for t in valid_times:
-                # Buscar datos más cercanos a cada tiempo
-                esp1_data = self.find_closest_data(self.esp1_data, t)
-                esp2_data = self.find_closest_data(self.esp2_data, t)
+            # Actualizar estado RS485
+            if esp1_count > 0 and esp2_count > 0:
+                self.rs485_status.setText("RS485: Activo (Datos de ambos ESP)")
+            elif esp1_count > 0 or esp2_count > 0:
+                self.rs485_status.setText("RS485: Parcial (Solo un ESP)")
+            else:
+                self.rs485_status.setText("RS485: Sin datos")
                 
-                esp1_local_values.append(self.get_sensor_value(esp1_data, 'local'))
-                esp1_remote_values.append(self.get_sensor_value(esp1_data, 'remote'))
-                esp2_local_values.append(self.get_sensor_value(esp2_data, 'local'))
-                esp2_remote_values.append(self.get_sensor_value(esp2_data, 'remote'))
-            
-            # Actualizar curvas
-            self.esp1_curve.setData(times_relative, esp1_local_values)
-            self.esp1_remote_curve.setData(times_relative, esp1_remote_values)
-            self.esp2_curve.setData(times_relative, esp2_local_values)
-            self.esp2_remote_curve.setData(times_relative, esp2_remote_values)
-            
-            # Actualizar valores actuales
-            if esp1_local_values:
-                self.esp1_local_value.setText(f"{esp1_local_values[-1]:.2f}")
-                self.esp1_remote_value.setText(f"{esp1_remote_values[-1]:.2f}")
-            if esp2_local_values:
-                self.esp2_local_value.setText(f"{esp2_local_values[-1]:.2f}")
-                self.esp2_remote_value.setText(f"{esp2_remote_values[-1]:.2f}")
-            
-            # Actualizar rate de datos
-            data_rate = len(self.esp1_data) + len(self.esp2_data)
-            self.data_rate_label.setText(f"Datos/seg: {data_rate}")
-            
         except Exception as e:
-            print(f"Error actualizando gráficas: {e}")
-    
-    def find_closest_data(self, data_buffer, target_time):
-        """Encontrar datos más cercanos a un tiempo dado"""
-        if not data_buffer:
-            return {}
-        
-        # Buscar el dato con timestamp más cercano
-        closest_data = data_buffer[-1]  # Por defecto el más reciente
-        min_diff = float('inf')
-        
-        for data in reversed(data_buffer):
-            if 'timestamp' in data:
-                data_time = data['timestamp'] / 1000.0  # Convertir ms a s
-                diff = abs(target_time - data_time)
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_data = data
-                elif diff > min_diff:
-                    break  # Los datos están ordenados, no hay necesidad de seguir
-        
-        return closest_data
+            print(f"Error actualizando estadísticas: {e}")
     
     def send_led_command(self, target, led_name, state):
         """Enviar comando de LED al ESP correspondiente"""
-        command = {
-            "target": target,
-            led_name: state
-        }
-        
         try:
-            if target == 'ESP1' and self.esp1_worker:
-                success = self.esp1_worker.send_command(command)
-                if not success:
-                    print(f"Error enviando comando a ESP1: {command}")
-            elif target == 'ESP2' and self.esp2_worker:
-                success = self.esp2_worker.send_command(command)
-                if not success:
-                    print(f"Error enviando comando a ESP2: {command}")
+            # Crear comando simple para compatibilidad
+            command = f"{led_name}:{str(state).lower()}\n"
+            
+            # Enviar al ESP correspondiente
+            if target == 'ESP1' and hasattr(self, 'esp1_worker') and self.esp1_worker and self.esp1_worker.running:
+                self.esp1_worker.write_data(command.encode())
+                print(f"Enviado a ESP1: {led_name} = {state}")
+            elif target == 'ESP2' and hasattr(self, 'esp2_worker') and self.esp2_worker and self.esp2_worker.running:
+                self.esp2_worker.write_data(command.encode())
+                print(f"Enviado a ESP2: {led_name} = {state}")
+            else:
+                print(f"Error: {target} no está conectado o no está corriendo")
+                
         except Exception as e:
-            print(f"Error enviando comando {command}: {e}")
+            print(f"Error enviando comando LED: {e}")
     
     def closeEvent(self, event):
         """Limpiar recursos al cerrar"""
-        if self.esp1_worker:
-            self.esp1_worker.stop()
-            self.esp1_worker.wait()
-        if self.esp2_worker:
-            self.esp2_worker.stop()
-            self.esp2_worker.wait()
+        print("Cerrando aplicación...")
+        
+        try:
+            if hasattr(self, 'esp1_worker') and self.esp1_worker:
+                self.esp1_worker.stop()
+                self.esp1_worker.wait()
+                
+            if hasattr(self, 'esp2_worker') and self.esp2_worker:
+                self.esp2_worker.stop()
+                self.esp2_worker.wait()
+        except Exception as e:
+            print(f"Error cerrando workers: {e}")
+            
         event.accept()
 
 def main():

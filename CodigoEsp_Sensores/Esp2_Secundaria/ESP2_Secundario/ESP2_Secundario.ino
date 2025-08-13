@@ -1,6 +1,7 @@
 /*
- * ESP32 S3 - ESP2 Secundario - VERSION SIMPLE PARA TEST
- * Solo control de LEDs via RS485
+ * ESP32 S3 - ESP2 Secundario - SISTEMA MAESTRO/ESCLAVO
+ * Comunicación RS485/RS232 con comando de rol maestro/esclavo
+ * Solo el ESP MAESTRO envía datos continuos
  */
 
 #include <HardwareSerial.h>
@@ -15,20 +16,51 @@
 #define RS485_RE           38  // Receptor Enable
 #define RS485_RO           39  // Receptor Output
 
+// Sensores Analógicos
+#define PIN_POTENCIOMETRO   6
+#define PIN_LDR             7
+#define PIN_ENCODER         8
+
 // ============ VARIABLES GLOBALES ============
 HardwareSerial RS485Serial(1);
-String rs485_buffer = "";
+
+// Variables de sensores
+struct SensorData {
+  int potenciometro;
+  int ldr;
+  int encoder;
+  unsigned long timestamp;
+} localSensors, remoteSensors;
+
+// Estados de LEDs
+bool led_verde_state = false;
+bool led_rojo_state = false;
+bool led_amarillo_state = false;
+
+// SISTEMA MAESTRO/ESCLAVO
+bool is_master = false;  // ESP2 es esclavo por defecto
+String device_role = "ESCLAVO";
+
+unsigned long lastSensorRead = 0;
+unsigned long lastDataSend = 0;
+#define SENSOR_INTERVAL 50   // Leer sensores cada 50ms (20Hz)
+#define SEND_INTERVAL 50     // Enviar datos cada 50ms (20Hz)
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("ESP2 INICIANDO - VERSION SIMPLE");
+  Serial.println("=== ESP2 INICIANDO - SISTEMA MAESTRO/ESCLAVO ===");
   
   // Configurar LEDs
   pinMode(LED_VERDE, OUTPUT);
   pinMode(LED_ROJO, OUTPUT);
   pinMode(LED_AMARILLO, OUTPUT);
+  
+  // Configurar sensores
+  pinMode(PIN_POTENCIOMETRO, INPUT);
+  pinMode(PIN_LDR, INPUT);
+  pinMode(PIN_ENCODER, INPUT);
   
   // Apagar LEDs
   digitalWrite(LED_VERDE, LOW);
@@ -43,62 +75,195 @@ void setup() {
   // Inicializar UART1 para RS485
   RS485Serial.begin(9600, SERIAL_8N1, RS485_RO, RS485_DI);
   
-  Serial.println("ESP2 LISTO - ESPERANDO COMANDOS");
-  Serial.println("Comandos que acepta:");
-  Serial.println("ESP2_1 = LED Verde ON");
-  Serial.println("ESP2_0 = LED Verde OFF");
-  Serial.println("ESP2_2 = LED Rojo ON");
-  Serial.println("ESP2_3 = LED Rojo OFF");
-  Serial.println("ESP2_4 = LED Amarillo ON");
-  Serial.println("ESP2_5 = LED Amarillo OFF");
+  Serial.println("ESP2 LISTO - Configuracion Maestro/Esclavo");
+  Serial.print("Estado actual: ");
+  Serial.println(device_role);
+  Serial.println("Comandos disponibles:");
+  Serial.println("  SET_MASTER - Convertir en maestro");
+  Serial.println("  SET_SLAVE - Convertir en esclavo");
+  Serial.println("  JSON LED commands: {\"led_verde\":true/false}");
   
-  // Test rápido para verificar LEDs
-  Serial.println("PROBANDO LEDs EXTERNOS...");
-  digitalWrite(LED_VERDE, HIGH);
-  delay(1000);  // 1 segundo para que puedas ver
-  digitalWrite(LED_VERDE, LOW);
-  
-  digitalWrite(LED_ROJO, HIGH);
-  delay(1000);
-  digitalWrite(LED_ROJO, LOW);
-  
-  digitalWrite(LED_AMARILLO, HIGH);
-  delay(1000);
-  digitalWrite(LED_AMARILLO, LOW);
-  
-  Serial.println("Test de LEDs completado");
+  // Test inicial de sensores
+  readLocalSensors();
+  delay(100);
 }
 
 void loop() {
-  // Escuchar comandos de RS485
-  receiveFromRS485();
+  unsigned long currentTime = millis();
   
-  // También poder enviar comandos de prueba desde Serial Monitor ESP2
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    
-    Serial.println("CMD ESP2: " + cmd);
-    
-    // Comandos locales ESP2
-    if (cmd == "1") {
-      digitalWrite(LED_VERDE, HIGH);
-      Serial.println("ESP2 LED Verde ON (local)");
-    }
-    else if (cmd == "0") {
-      digitalWrite(LED_VERDE, LOW);
-      Serial.println("ESP2 LED Verde OFF (local)");
-    }
-    // Enviar mensaje a ESP1
-    else if (cmd.startsWith("ESP1_")) {
-      sendToESP1(cmd);
-    }
+  // Siempre leer sensores locales
+  if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
+    readLocalSensors();
+    lastSensorRead = currentTime;
   }
   
-  delay(10);
+  // Solo enviar datos si es MAESTRO
+  if (is_master && (currentTime - lastDataSend >= SEND_INTERVAL)) {
+    sendJSONData();
+    lastDataSend = currentTime;
+  }
+  
+  // Procesar comandos del monitor serial (interfaz Python)
+  processSerialCommands();
+  
+  // Escuchar comunicación RS485
+  receiveFromRS485();
+  
+  delay(5);
 }
 
-// ============ FUNCIONES AUXILIARES ============
+// ============ FUNCIONES DE SENSORES ============
+
+void readLocalSensors() {
+  localSensors.potenciometro = analogRead(PIN_POTENCIOMETRO);
+  localSensors.ldr = analogRead(PIN_LDR);
+  localSensors.encoder = analogRead(PIN_ENCODER);
+  localSensors.timestamp = millis();
+}
+
+void sendJSONData() {
+  // Solo enviar si es maestro
+  if (!is_master) {
+    return;
+  }
+  
+  // Crear JSON compatible con la interfaz Python
+  Serial.print("{\"device\":\"ESP2\",\"role\":\"");
+  Serial.print(device_role);
+  Serial.print("\",\"timestamp\":");
+  Serial.print(localSensors.timestamp);
+  Serial.print(",\"local\":{\"pot\":");
+  Serial.print((localSensors.potenciometro * 3.3) / 4095.0, 3);
+  Serial.print(",\"ldr\":");
+  Serial.print((localSensors.ldr * 3.3) / 4095.0, 3);
+  Serial.print(",\"enc\":");
+  Serial.print((localSensors.encoder * 3.3) / 4095.0, 3);
+  Serial.print(",\"ax\":0.0}");
+  
+  // Datos remotos si existen
+  if (remoteSensors.timestamp > 0) {
+    Serial.print(",\"remote\":{\"pot\":");
+    Serial.print((remoteSensors.potenciometro * 3.3) / 4095.0, 3);
+    Serial.print(",\"ldr\":");
+    Serial.print((remoteSensors.ldr * 3.3) / 4095.0, 3);
+    Serial.print(",\"enc\":");
+    Serial.print((remoteSensors.encoder * 3.3) / 4095.0, 3);
+    Serial.print(",\"ax\":0.0}");
+  } else {
+    Serial.print(",\"remote\":{\"pot\":0.0,\"ldr\":0.0,\"enc\":0.0,\"ax\":0.0}");
+  }
+  
+  Serial.println("}");
+  
+  // Pedir datos de ESP1 cada cierto tiempo
+  static unsigned long lastRequest = 0;
+  if (millis() - lastRequest > 200) {  // Cada 200ms
+    requestESP1Data();
+    lastRequest = millis();
+  }
+}
+
+void processSerialCommands() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+    
+    // Comandos de rol maestro/esclavo
+    if (input == "SET_MASTER") {
+      is_master = true;
+      device_role = "MAESTRO";
+      Serial.println("ESP2 configurado como MAESTRO - Enviando datos");
+      // Notificar a ESP1 que ESP2 es maestro
+      sendRoleCommandToESP1("SET_SLAVE");
+    }
+    else if (input == "SET_SLAVE") {
+      is_master = false;
+      device_role = "ESCLAVO";
+      Serial.println("ESP2 configurado como ESCLAVO - Solo escuchando");
+      // Notificar a ESP1 que ESP2 es esclavo
+      sendRoleCommandToESP1("SET_MASTER");
+    }
+    // Comandos JSON de LEDs (retrocompatibilidad)
+    else if (input.startsWith("{") && input.endsWith("}")) {
+      processLEDCommands(input);
+    }
+    // Comandos de LED simples
+    else if (input.indexOf("led_verde") >= 0) {
+      if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
+        led_verde_state = true;
+        digitalWrite(LED_VERDE, HIGH);
+        Serial.println("LED Verde ON");
+      } else {
+        led_verde_state = false;
+        digitalWrite(LED_VERDE, LOW);
+        Serial.println("LED Verde OFF");
+      }
+    }
+    else if (input.indexOf("led_rojo") >= 0) {
+      if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
+        led_rojo_state = true;
+        digitalWrite(LED_ROJO, HIGH);
+        Serial.println("LED Rojo ON");
+      } else {
+        led_rojo_state = false;
+        digitalWrite(LED_ROJO, LOW);
+        Serial.println("LED Rojo OFF");
+      }
+    }
+    else if (input.indexOf("led_amarillo") >= 0) {
+      if (input.indexOf("true") >= 0 || input.indexOf("1") >= 0 || input.indexOf("ON") >= 0) {
+        led_amarillo_state = true;
+        digitalWrite(LED_AMARILLO, HIGH);
+        Serial.println("LED Amarillo ON");
+      } else {
+        led_amarillo_state = false;
+        digitalWrite(LED_AMARILLO, LOW);
+        Serial.println("LED Amarillo OFF");
+      }
+    }
+  }
+}
+
+void processLEDCommands(String jsonInput) {
+  // Procesar comandos JSON de LEDs
+  if (jsonInput.indexOf("\"led_verde\":true") > 0) {
+    led_verde_state = true;
+    digitalWrite(LED_VERDE, HIGH);
+    Serial.println("LED Verde ON (JSON)");
+  }
+  if (jsonInput.indexOf("\"led_verde\":false") > 0) {
+    led_verde_state = false;
+    digitalWrite(LED_VERDE, LOW);
+    Serial.println("LED Verde OFF (JSON)");
+  }
+  if (jsonInput.indexOf("\"led_rojo\":true") > 0) {
+    led_rojo_state = true;
+    digitalWrite(LED_ROJO, HIGH);
+    Serial.println("LED Rojo ON (JSON)");
+  }
+  if (jsonInput.indexOf("\"led_rojo\":false") > 0) {
+    led_rojo_state = false;
+    digitalWrite(LED_ROJO, LOW);
+    Serial.println("LED Rojo OFF (JSON)");
+  }
+  if (jsonInput.indexOf("\"led_amarillo\":true") > 0) {
+    led_amarillo_state = true;
+    digitalWrite(LED_AMARILLO, HIGH);
+    Serial.println("LED Amarillo ON (JSON)");
+  }
+  if (jsonInput.indexOf("\"led_amarillo\":false") > 0) {
+    led_amarillo_state = false;
+    digitalWrite(LED_AMARILLO, LOW);
+    Serial.println("LED Amarillo OFF (JSON)");
+  }
+  
+  // Comandos para ESP1
+  if (jsonInput.indexOf("\"target\":\"ESP1\"") > 0) {
+    forwardCommandToESP1(jsonInput);
+  }
+}
+
+// ============ FUNCIONES RS485 ============
 
 void setRS485ReceiveMode() {
   digitalWrite(RS485_RE, LOW);
@@ -111,75 +276,100 @@ void setRS485TransmitMode() {
   delay(1);
 }
 
+void forwardCommandToESP1(String jsonCommand) {
+  setRS485TransmitMode();
+  delay(5);
+  
+  RS485Serial.println("CMD:" + jsonCommand);
+  RS485Serial.flush();
+  
+  delay(10);
+  setRS485ReceiveMode();
+}
+
+void sendRoleCommandToESP1(String role) {
+  setRS485TransmitMode();
+  delay(5);
+  
+  RS485Serial.println("ROLE:" + role);
+  RS485Serial.flush();
+  
+  delay(10);
+  setRS485ReceiveMode();
+  Serial.println("Comando de rol enviado a ESP1: " + role);
+}
+
+void requestESP1Data() {
+  setRS485TransmitMode();
+  delay(5);
+  
+  RS485Serial.println("GET_SENSORS");
+  RS485Serial.flush();
+  
+  delay(10);
+  setRS485ReceiveMode();
+}
+
 void receiveFromRS485() {
-  if (RS485Serial.available()) {
-    String comando = RS485Serial.readStringUntil('\n');
-    comando.trim();
+  while (RS485Serial.available()) {
+    String data = RS485Serial.readStringUntil('\n');
+    data.trim();
     
-    Serial.println("Comando recibido de ESP1: " + comando);
-    
-    // Procesar todos los comandos de LEDs
-    if (comando == "ESP2_1") {
-      digitalWrite(LED_VERDE, HIGH);
-      Serial.println("ESP2 LED Verde ON");
-      sendResponseToESP1("ESP2 LED Verde ON");
-    }
-    else if (comando == "ESP2_0") {
-      digitalWrite(LED_VERDE, LOW);
-      Serial.println("ESP2 LED Verde OFF");
-      sendResponseToESP1("ESP2 LED Verde OFF");
-    }
-    else if (comando == "ESP2_2") {
-      digitalWrite(LED_ROJO, HIGH);
-      Serial.println("ESP2 LED Rojo ON");
-      sendResponseToESP1("ESP2 LED Rojo ON");
-    }
-    else if (comando == "ESP2_3") {
-      digitalWrite(LED_ROJO, LOW);
-      Serial.println("ESP2 LED Rojo OFF");
-      sendResponseToESP1("ESP2 LED Rojo OFF");
-    }
-    else if (comando == "ESP2_4") {
-      digitalWrite(LED_AMARILLO, HIGH);
-      Serial.println("ESP2 LED Amarillo ON");
-      sendResponseToESP1("ESP2 LED Amarillo ON");
-    }
-    else if (comando == "ESP2_5") {
-      digitalWrite(LED_AMARILLO, LOW);
-      Serial.println("ESP2 LED Amarillo OFF");
-      sendResponseToESP1("ESP2 LED Amarillo OFF");
+    if (data.length() > 0) {
+      // Solicitud de sensores
+      if (data == "GET_SENSORS") {
+        sendSensorsViaRS485();
+      }
+      // Comando JSON
+      else if (data.startsWith("CMD:")) {
+        String jsonCmd = data.substring(4);
+        processLEDCommands(jsonCmd);
+      }
+      // Procesar datos de sensores: "SENS:pot,ldr,enc"
+      else if (data.startsWith("SENS:")) {
+        String sensorData = data.substring(5);
+        int comma1 = sensorData.indexOf(',');
+        int comma2 = sensorData.lastIndexOf(',');
+        
+        if (comma1 > 0 && comma2 > comma1) {
+          remoteSensors.potenciometro = sensorData.substring(0, comma1).toInt();
+          remoteSensors.ldr = sensorData.substring(comma1 + 1, comma2).toInt();
+          remoteSensors.encoder = sensorData.substring(comma2 + 1).toInt();
+          remoteSensors.timestamp = millis();
+        }
+      }
+      // Comando de rol recibido
+      else if (data.startsWith("ROLE:")) {
+        String roleCommand = data.substring(5);
+        if (roleCommand == "SET_MASTER") {
+          is_master = true;
+          device_role = "MAESTRO";
+          Serial.println("ESP2 configurado como MAESTRO por ESP1");
+        } else if (roleCommand == "SET_SLAVE") {
+          is_master = false;
+          device_role = "ESCLAVO";
+          Serial.println("ESP2 configurado como ESCLAVO por ESP1");
+        }
+      }
     }
   }
 }
 
-void sendResponseToESP1(String respuesta) {
-  delay(50);  // Esperar que ESP1 termine de transmitir
+void sendSensorsViaRS485() {
   setRS485TransmitMode();
-  delay(10);  // Tiempo para estabilizar
+  delay(5);
   
-  RS485Serial.println("OK: " + respuesta);
+  // Formato simple: SENS:pot,ldr,enc
+  RS485Serial.print("SENS:");
+  RS485Serial.print(localSensors.potenciometro);
+  RS485Serial.print(",");
+  RS485Serial.print(localSensors.ldr);
+  RS485Serial.print(",");
+  RS485Serial.println(localSensors.encoder);
   RS485Serial.flush();
-  delay(50);  // Asegurar que se envíe completamente
   
+  delay(10);
   setRS485ReceiveMode();
-  
-  Serial.println("Respuesta enviada a ESP1: " + respuesta);
 }
 
-void sendToESP1(String comando) {
-  Serial.println("ESP2 enviando a ESP1: " + comando);
-  
-  setRS485TransmitMode();
-  delay(10);
-  
-  RS485Serial.println(comando);
-  RS485Serial.flush();
-  delay(10);
-  
-  setRS485ReceiveMode();
-  delay(20);
-  
-  Serial.println("Mensaje enviado a ESP1");
-}
-
-// FIN DEL CÓDIGO SIMPLIFICADO ESP2
+// FIN DEL CÓDIGO ESP2
