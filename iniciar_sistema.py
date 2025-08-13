@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Sistema ESP32 S3 - Interfaz de Monitoreo RS485/RS232
-Comunicación bidireccional entre ESP1 y ESP2 con control de LEDs remotos
+Sistema ESP32 S3 - Interfaz DISTRIBUIDA RS485/RS232
+Comunicación bidireccional entre ESP1 y ESP2 con soporte multi-computadora
 
-Características:
+CARACTERÍSTICAS PRINCIPALES:
+✓ Modo LOCAL: Una PC controla ambos ESP (tradicional)
+✓ Modo DISTRIBUIDO: Cada PC controla un ESP, comunicación RS485
 ✓ Conexión serial robusta a ESP32
 ✓ Control maestro/esclavo desde interfaz
 ✓ LEDs remotos via RS485 (ESP1 ↔ ESP2)
 ✓ Gráficas en tiempo real optimizadas
 ✓ Visualización de 4 sensores
 ✓ Protocolo JSON a 20Hz
+✓ Auto-detección de ESP local en modo distribuido
 """
 
 import sys
@@ -21,7 +24,7 @@ import serial.tools.list_ports
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QPushButton, QLabel, QFrame, QGridLayout, QGroupBox,
-    QCheckBox, QSplitter, QTabWidget
+    QCheckBox, QSplitter, QTabWidget, QRadioButton, QLineEdit
 )
 from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -108,13 +111,18 @@ class SerialWorker(QThread):
 class ESP32Interface(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sistema ESP32 S3 - Control RS485/RS232")
-        self.setGeometry(100, 100, 1800, 1000)
+        self.setWindowTitle("Sistema ESP32 S3 - Control RS485/RS232 [DISTRIBUIDO]")
+        self.setGeometry(100, 100, 1900, 1000)
         
         # Variables del sistema
         self.esp1_worker = None
         self.esp2_worker = None
         self.master_esp = "ESP1"
+        
+        # Variables para modo distribuido
+        self.operation_mode = "LOCAL"  # LOCAL o DISTRIBUIDO
+        self.local_esp = None  # ESP conectado localmente
+        self.remote_ip = "192.168.1.100"  # IP de la otra computadora
         
         # Datos para gráficas (optimizados)
         self.plot_data_local = deque(maxlen=300)   # 15 segundos a 20Hz
@@ -164,10 +172,34 @@ class ESP32Interface(QMainWindow):
         layout = QVBoxLayout(panel)
         
         # Título
-        title = QLabel("Control ESP32 S3")
+        title = QLabel("Control ESP32 S3 [DISTRIBUIDO]")
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+        
+        # === MODO DE OPERACIÓN ===
+        mode_group = QGroupBox("Modo de Operación")
+        mode_layout = QVBoxLayout(mode_group)
+        
+        self.local_mode_btn = QRadioButton("Modo LOCAL (1 PC, 2 ESP)")
+        self.distributed_mode_btn = QRadioButton("Modo DISTRIBUIDO (2 PC, 1 ESP c/u)")
+        self.local_mode_btn.setChecked(True)
+        
+        self.local_mode_btn.toggled.connect(lambda: self.set_operation_mode("LOCAL"))
+        self.distributed_mode_btn.toggled.connect(lambda: self.set_operation_mode("DISTRIBUIDO"))
+        
+        mode_layout.addWidget(self.local_mode_btn)
+        mode_layout.addWidget(self.distributed_mode_btn)
+        
+        # # IP de la otra computadora (solo para modo distribuido)
+        # ip_layout = QHBoxLayout()
+        # ip_layout.addWidget(QLabel("IP otra PC:"))
+        # self.remote_ip_input = QLineEdit("192.168.1.100")
+        # self.remote_ip_input.setEnabled(False)
+        # ip_layout.addWidget(self.remote_ip_input)
+        # mode_layout.addLayout(ip_layout)
+        
+        layout.addWidget(mode_group)
         
         # === CONEXIONES ===
         conn_group = QGroupBox("Conexiones Serial")
@@ -416,6 +448,17 @@ class ESP32Interface(QMainWindow):
             }
         """)
     
+    def set_operation_mode(self, mode):
+        """Cambiar modo de operación"""
+        self.operation_mode = mode
+        
+        if mode == "LOCAL":
+            self.remote_ip_input.setEnabled(False)
+            print("Modo cambiado a: LOCAL (1 PC controla 2 ESP)")
+        elif mode == "DISTRIBUIDO":
+            self.remote_ip_input.setEnabled(True)
+            print("Modo cambiado a: DISTRIBUIDO (2 PC, 1 ESP cada una)")
+    
     def refresh_ports(self):
         """Actualizar puertos COM disponibles"""
         try:
@@ -524,39 +567,78 @@ class ESP32Interface(QMainWindow):
             print("Comando SET_MASTER enviado a ESP2")
     
     def send_led_command(self, target, led_name, state):
-        """Enviar comando de LED"""
+        """Enviar comando de LED (adaptado para modo distribuido)"""
         # Comando específico para evitar conflictos
         command = f"{target.lower()}_{led_name}:{str(state).lower()}\n"
         
-        if target == 'ESP1' and self.esp1_worker and self.esp1_worker.running:
-            self.esp1_worker.write_data(command.encode())
-            print(f"LED ESP1: {led_name} = {state}")
-        elif target == 'ESP2' and self.esp2_worker and self.esp2_worker.running:
-            self.esp2_worker.write_data(command.encode())
-            print(f"LED ESP2: {led_name} = {state}")
+        if self.operation_mode == "DISTRIBUIDO":
+            # En modo distribuido, determinar si el comando es local o remoto
+            if target == self.local_esp:
+                # ESP local - envío directo
+                if target == 'ESP1' and self.esp1_worker and self.esp1_worker.running:
+                    self.esp1_worker.write_data(command.encode())
+                    print(f"LED ESP1 LOCAL: {led_name} = {state}")
+                elif target == 'ESP2' and self.esp2_worker and self.esp2_worker.running:
+                    self.esp2_worker.write_data(command.encode())
+                    print(f"LED ESP2 LOCAL: {led_name} = {state}")
+            else:
+                # ESP remoto - envío via RS485
+                if self.local_esp == 'ESP1' and self.esp1_worker and self.esp1_worker.running:
+                    self.esp1_worker.write_data(command.encode())
+                    print(f"LED {target} REMOTO via ESP1→RS485: {led_name} = {state}")
+                elif self.local_esp == 'ESP2' and self.esp2_worker and self.esp2_worker.running:
+                    self.esp2_worker.write_data(command.encode())
+                    print(f"LED {target} REMOTO via ESP2→RS485: {led_name} = {state}")
+        else:
+            # Modo local normal
+            if target == 'ESP1' and self.esp1_worker and self.esp1_worker.running:
+                self.esp1_worker.write_data(command.encode())
+                print(f"LED ESP1: {led_name} = {state}")
+            elif target == 'ESP2' and self.esp2_worker and self.esp2_worker.running:
+                self.esp2_worker.write_data(command.encode())
+                print(f"LED ESP2: {led_name} = {state}")
     
     def test_remote_leds(self):
-        """Probar LEDs remotos"""
-        print("Probando LEDs remotos...")
+        """Probar LEDs remotos (adaptado para modo distribuido)"""
+        print(f"Probando LEDs remotos - Modo: {self.operation_mode}")
         
-        if self.esp1_worker and self.esp1_worker.running:
-            # ESP1 controla LEDs de ESP2
-            commands = ["esp2_led_verde:true\n", "esp2_led_rojo:true\n", "esp2_led_amarillo:true\n"]
-            for cmd in commands:
-                self.esp1_worker.write_data(cmd.encode())
-                print(f"ESP1 → ESP2: {cmd.strip()}")
-        
-        if self.esp2_worker and self.esp2_worker.running:
-            # ESP2 controla LEDs de ESP1
-            commands = ["esp1_led_verde:true\n", "esp1_led_rojo:true\n", "esp1_led_amarillo:true\n"]
-            for cmd in commands:
-                self.esp2_worker.write_data(cmd.encode())
-                print(f"ESP2 → ESP1: {cmd.strip()}")
+        if self.operation_mode == "DISTRIBUIDO":
+            # En modo distribuido, probar comunicación con el ESP remoto
+            if self.local_esp == "ESP1" and self.esp1_worker and self.esp1_worker.running:
+                commands = ["esp2_led_verde:true\n", "esp2_led_rojo:true\n", "esp2_led_amarillo:true\n"]
+                for cmd in commands:
+                    self.esp1_worker.write_data(cmd.encode())
+                    print(f"ESP1→ESP2 via RS485: {cmd.strip()}")
+                    
+            elif self.local_esp == "ESP2" and self.esp2_worker and self.esp2_worker.running:
+                commands = ["esp1_led_verde:true\n", "esp1_led_rojo:true\n", "esp1_led_amarillo:true\n"]
+                for cmd in commands:
+                    self.esp2_worker.write_data(cmd.encode())
+                    print(f"ESP2→ESP1 via RS485: {cmd.strip()}")
+        else:
+            # Modo local normal
+            if self.esp1_worker and self.esp1_worker.running:
+                commands = ["esp2_led_verde:true\n", "esp2_led_rojo:true\n", "esp2_led_amarillo:true\n"]
+                for cmd in commands:
+                    self.esp1_worker.write_data(cmd.encode())
+                    print(f"ESP1 → ESP2: {cmd.strip()}")
+            
+            if self.esp2_worker and self.esp2_worker.running:
+                commands = ["esp1_led_verde:true\n", "esp1_led_rojo:true\n", "esp1_led_amarillo:true\n"]
+                for cmd in commands:
+                    self.esp2_worker.write_data(cmd.encode())
+                    print(f"ESP2 → ESP1: {cmd.strip()}")
     
     def on_data_received(self, port, data):
         """Procesar datos JSON recibidos"""
         try:
             device = data.get('device', 'Unknown')
+            
+            # Auto-detectar ESP local en modo distribuido
+            if self.operation_mode == "DISTRIBUIDO" and not self.local_esp:
+                if device in ["ESP1", "ESP2"]:
+                    self.local_esp = device
+                    print(f"Auto-detectado ESP local: {device}")
             
             # Solo procesar datos del ESP maestro para gráficas
             if device == self.master_esp:
@@ -635,17 +717,22 @@ class ESP32Interface(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Sistema ESP32 S3")
+    app.setApplicationName("Sistema ESP32 S3 - Distribuido")
     app.setStyle('Fusion')
     
     window = ESP32Interface()
     window.show()
     
-    print("=== Sistema ESP32 S3 Iniciado ===")
-    print("1. Conectar ESP1 y ESP2")
-    print("2. Seleccionar maestro")
-    print("3. Probar LEDs remotos")
-    print("4. Visualizar gráficas en tiempo real")
+    print("=== Sistema ESP32 S3 [DISTRIBUIDO] Iniciado ===")
+    print("MODOS DISPONIBLES:")
+    print("1. LOCAL: Una PC controla ambos ESP")
+    print("2. DISTRIBUIDO: Cada PC controla un ESP, comunicación RS485")
+    print("")
+    print("FUNCIONALIDADES:")
+    print("✓ Auto-detección de ESP local")
+    print("✓ Comandos LED via RS485 entre PCs")
+    print("✓ Gráficas de datos remotos")
+    print("✓ Sincronización maestro/esclavo")
     
     sys.exit(app.exec())
 
